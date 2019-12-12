@@ -1,13 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+﻿using DepartmentExample.Model;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
-using System.Data;
-using DepartmentExample.Model;
-using Microsoft.AspNetCore.Http;
+using System;
+using System.Collections.Generic;
 using System.Data.SqlClient;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace DepartmentExample.Controllers
 {
@@ -38,19 +37,58 @@ namespace DepartmentExample.Controllers
                 conn.Open();
                 using (SqlCommand cmd = conn.CreateCommand())
                 {
-                    cmd.CommandText = "SELECT Id, DeptName FROM Department";
+                    cmd.CommandText = @"SELECT d.Id, d.DeptName, e.FirstName, e.LastName, e.DepartmentId, e.Id as EmployeeId
+                                        FROM Department d
+                                        LEFT JOIN Employee e on d.id = e.DepartmentId";
                     SqlDataReader reader = cmd.ExecuteReader();
                     List<Department> departments = new List<Department>();
 
                     while (reader.Read())
                     {
-                        Department department = new Department
-                        {
-                            Id = reader.GetInt32(reader.GetOrdinal("Id")),
-                            DeptName = reader.GetString(reader.GetOrdinal("DeptName"))
-                        };
+                        var departmentId = reader.GetInt32(reader.GetOrdinal("Id"));
+                        var departmentAlreadyAddedd = departments.FirstOrDefault(d => d.Id == departmentId);
 
-                        departments.Add(department);
+                        if (departmentAlreadyAddedd == null)
+                        {
+                            Department department = new Department
+                            {
+                                Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                                DeptName = reader.GetString(reader.GetOrdinal("DeptName")),
+                                Employees = new List<Employee>()
+                            };
+
+                            departments.Add(department);
+
+                            var hasEmployee = !reader.IsDBNull(reader.GetOrdinal("EmployeeId"));
+
+                            if (hasEmployee)
+                            {
+                                department.Employees.Add(new Employee()
+                                {
+                                    FirstName = reader.GetString(reader.GetOrdinal("FirstName")),
+                                    LastName = reader.GetString(reader.GetOrdinal("LastName")),
+                                    DepartmentId = reader.GetInt32(reader.GetOrdinal("Id")),
+                                    Id = reader.GetInt32(reader.GetOrdinal("EmployeeId")),
+
+                                });
+                            }
+                        }
+                        else
+                        {
+                            var hasEmployee = !reader.IsDBNull(reader.GetOrdinal("EmployeeId"));
+
+                            if (hasEmployee)
+                            {
+                                departmentAlreadyAddedd.Employees.Add(new Employee()
+                                {
+                                    FirstName = reader.GetString(reader.GetOrdinal("FirstName")),
+                                    LastName = reader.GetString(reader.GetOrdinal("LastName")),
+                                    DepartmentId = reader.GetInt32(reader.GetOrdinal("Id")),
+                                    Id = reader.GetInt32(reader.GetOrdinal("EmployeeId")),
+
+                                });
+                            }
+                        }
                     }
                     reader.Close();
 
@@ -67,24 +105,33 @@ namespace DepartmentExample.Controllers
                 conn.Open();
                 using (SqlCommand cmd = conn.CreateCommand())
                 {
-                    cmd.CommandText = @"
-                        SELECT
-                            Id, DeptName
-                        FROM Department
-                        WHERE Id = @id";
+                    cmd.CommandText = @"SELECT e.FirstName, e.LastName, e.Id as EmployeeId, d.DeptName, d.Id
+                     FROM Department d
+                     LEFT JOIN Employee e on d.Id = e.DepartmentId
+                     WHERE d.id = @id"; 
                     cmd.Parameters.Add(new SqlParameter("@id", id));
                     SqlDataReader reader = cmd.ExecuteReader();
 
                     Department department = null;
 
-                    if (reader.Read())
+                    while (reader.Read())
                     {
-                        department = new Department
+                        if (department == null)
                         {
-                            Id = reader.GetInt32(reader.GetOrdinal("Id")),
-                            DeptName = reader.GetString(reader.GetOrdinal("DeptName"))
-                         
-                        };
+                            department = new Department
+                            {
+                                Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                                DeptName = reader.GetString(reader.GetOrdinal("DeptName"))
+
+                            };
+                        }
+
+                        department.Employees.Add(new Employee()
+                        {
+                            FirstName = reader.GetString(reader.GetOrdinal("FirstName")),
+                            LastName = reader.GetString(reader.GetOrdinal("LastName")),
+                            Id = reader.GetInt32(reader.GetOrdinal("EmployeeId")),
+                        });
                     }
                     reader.Close();
 
@@ -93,6 +140,118 @@ namespace DepartmentExample.Controllers
                         return NotFound($"No Department found with the id of {id}");
                     }
                     return Ok(department);
+                }
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Post([FromBody] Department department)
+        {
+            using (SqlConnection conn = Connection)
+            {
+                conn.Open();
+                using (SqlCommand cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = @"INSERT INTO Department (DeptName)
+                                        OUTPUT INSERTED.Id
+                                        VALUES (@departmentName)";
+                    cmd.Parameters.Add(new SqlParameter("@departmentName", department.DeptName));
+                    int newId = (int)cmd.ExecuteScalar();
+                    department.Id = newId;
+                    return CreatedAtRoute("GetDepartment", new { id = newId }, department);
+                }
+            }
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> Put([FromRoute] int id, [FromBody] Department department)
+        {
+            try
+            {
+                using (SqlConnection conn = Connection)
+                {
+                    conn.Open();
+                    using (SqlCommand cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"UPDATE Department
+                                            SET DeptName = @deptName, 
+
+                                            WHERE Id = @id";
+                        cmd.Parameters.Add(new SqlParameter("@deptName", department.DeptName));
+                        cmd.Parameters.Add(new SqlParameter("@id", id));
+
+                        int rowsAffected = cmd.ExecuteNonQuery();
+                        if (rowsAffected > 0)
+                        {
+                            return new StatusCodeResult(StatusCodes.Status204NoContent);
+                        }
+                        throw new Exception("No rows affected");
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                if (!DepartmentExist(id))
+                {
+                    return NotFound();
+                }
+                else
+                {
+                    throw;
+                }
+            }
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> Delete([FromRoute] int id)
+        {
+            try
+            {
+                using (SqlConnection conn = Connection)
+                {
+                    conn.Open();
+                    using (SqlCommand cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"DELETE FROM Department WHERE Id = @id";
+                        cmd.Parameters.Add(new SqlParameter("@id", id));
+
+                        int rowsAffected = cmd.ExecuteNonQuery();
+                        if (rowsAffected > 0)
+                        {
+                            return new StatusCodeResult(StatusCodes.Status204NoContent);
+                        }
+                        throw new Exception("No rows affected");
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                if (!DepartmentExist(id))
+                {
+                    return NotFound();
+                }
+                else
+                {
+                    throw;
+                }
+            }
+        }
+
+        private bool DepartmentExist(int id)
+        {
+            using (SqlConnection conn = Connection)
+            {
+                conn.Open();
+                using (SqlCommand cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = @"
+                        SELECT Id, DeptName 
+                        FROM Department
+                        WHERE Id = @id";
+                    cmd.Parameters.Add(new SqlParameter("@id", id));
+
+                    SqlDataReader reader = cmd.ExecuteReader();
+                    return reader.Read();
                 }
             }
         }
